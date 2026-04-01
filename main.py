@@ -13,6 +13,9 @@ import requests
 import os
 from openai import OpenAI
 import markdown
+import re
+from html import escape
+from reportlab.platypus import Image
 
 # ====== Set variables and other environmental items
 pd.set_option('display.max_rows', None)
@@ -126,15 +129,201 @@ print(completion.choices[0].message)
 
 # ====== Assemble the executive reporting
 executive_summary = completion.choices[0].message.content.strip()
-clean_html = markdown.markdown(
-    executive_summary,
-    extensions=['tables', 'fenced_code', 'nl2br'],
-    output_format='html5'
+
+
+def md_to_reportlab(text: str) -> str:
+    """
+    Converts **bold** markdown to ReportLab-safe <b> tags
+    and escapes everything else.
+    """
+    if not text:
+        return ""
+
+    # Escape everything first
+    text = escape(text)
+
+    # Replace markdown bold **text**
+    text = re.sub(
+        r"\*\*(.+?)\*\*",
+        r"<b>\1</b>",
+        text
+    )
+
+    return text
+
+
+from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+from reportlab.lib.units import inch
+from reportlab.lib.colors import HexColor
+from datetime import datetime
+
+# ===== PDF file name
+pdf_filename = "Executive_Project_Summary.pdf"
+
+# ===== Document setup
+doc = SimpleDocTemplate(
+    pdf_filename,
+    pagesize=LETTER,
+    rightMargin=50,
+    leftMargin=50,
+    topMargin=50,
+    bottomMargin=50
 )
 
-# ====== Write to  file
-with open('executive_summary.pdf', 'w') as f:
-    f.write(clean_html)
+# ===== Styles
+styles = getSampleStyleSheet()
 
-# ====== Complete the script execution
-print("Executive summary HTML generated: executive_summary.html")
+styles.add(ParagraphStyle(
+    name="TitleStyle",
+    fontSize=18,
+    leading=22,
+    spaceAfter=16,
+    textColor=HexColor("#2c3e50"),
+    alignment=TA_LEFT
+))
+
+styles.add(ParagraphStyle(
+    name="HeaderStyle",
+    fontSize=13,
+    leading=16,
+    spaceBefore=16,
+    spaceAfter=8,
+    textColor=HexColor("#2c3e50"),
+    fontName="Helvetica-Bold"
+))
+
+styles.add(ParagraphStyle(
+    name="BodyStyle",
+    fontSize=10.5,
+    leading=14,
+    spaceAfter=6
+))
+
+styles.add(ParagraphStyle(
+    name="BulletStyle",
+    fontSize=10.5,
+    leading=14,
+    leftIndent=12
+))
+
+styles.add(ParagraphStyle(
+    name="H1",
+    fontSize=16,
+    leading=20,
+    spaceBefore=20,
+    spaceAfter=10,
+    fontName="Helvetica-Bold",
+    textColor=HexColor("#2c3e50")
+))
+
+styles.add(ParagraphStyle(
+    name="H2",
+    fontSize=14,
+    leading=18,
+    spaceBefore=18,
+    spaceAfter=8,
+    fontName="Helvetica-Bold",
+    textColor=HexColor("#2c3e50")
+))
+
+styles.add(ParagraphStyle(
+    name="H3",
+    fontSize=12.5,
+    leading=16,
+    spaceBefore=16,
+    spaceAfter=6,
+    fontName="Helvetica-Bold",
+    textColor=HexColor("#34495e")
+))
+
+# ===== Content container
+elements = []
+
+# ===== Add logo at top of document
+logo_path = "assets/logo.png"
+
+if os.path.exists(logo_path):
+    logo = Image(
+        logo_path,
+        width=2.44 * inch,   # adjust if needed
+        height=0.49 * inch,
+        hAlign="LEFT"
+    )
+    elements.append(logo)
+    elements.append(Spacer(1, 0.25 * inch))
+
+# ===== Title Section
+elements.append(Paragraph("Executive Project Summary", styles["TitleStyle"]))
+elements.append(Paragraph(
+    "<b>Program:</b> Telecom Network Deployment<br/>"
+    f"<b>Date:</b> {datetime.now().strftime('%B %d, %Y')}",
+    styles["BodyStyle"]
+))
+elements.append(Spacer(1, 0.3 * inch))
+
+# ===== Parse Markdown-like structure
+markdown_lines = executive_summary.splitlines()
+bullet_buffer = []
+
+for line in markdown_lines:
+    raw_line = line.strip()
+
+    if not raw_line:
+        continue
+
+    # ===== Markdown Headings (#, ##, ###)
+    if raw_line.startswith("#"):
+        if bullet_buffer:
+            elements.append(ListFlowable(
+                [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
+                bulletType="bullet"
+            ))
+            bullet_buffer = []
+
+        level = len(raw_line) - len(raw_line.lstrip("#"))
+        text = raw_line.lstrip("#").strip()
+
+        if level == 1:
+            elements.append(Paragraph(md_to_reportlab(text), styles["H1"]))
+        elif level == 2:
+            elements.append(Paragraph(md_to_reportlab(text), styles["H2"]))
+        else:
+            elements.append(Paragraph(md_to_reportlab(text), styles["H3"]))
+
+        continue
+
+    # ===== Bullet points
+    if raw_line.startswith("-"):
+        bullet_buffer.append(md_to_reportlab(raw_line.lstrip("- ").strip()))
+        continue
+
+    # ===== Normal paragraph
+    if bullet_buffer:
+        elements.append(ListFlowable(
+            [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
+            bulletType="bullet"
+        ))
+        bullet_buffer = []
+
+    elements.append(Paragraph(md_to_reportlab(raw_line), styles["BodyStyle"]))
+
+# Flush remaining bullets
+if bullet_buffer:
+    elements.append(ListFlowable(
+        [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
+        bulletType="bullet"
+    ))
+
+# Flush remaining bullets
+if bullet_buffer:
+    elements.append(ListFlowable(
+        [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
+        bulletType="bullet"
+    ))
+
+# ===== Build PDF
+doc.build(elements)
+print(f"✅ Professional PDF generated: {pdf_filename}")
