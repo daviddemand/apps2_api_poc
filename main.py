@@ -1,6 +1,6 @@
 """
 An exploratory run of the OneVizion API on APPS2.
-Author: David
+Author: David Demand
 Email: ddemand@onevizion.com
 Date: 3/27/2026
 """
@@ -16,12 +16,37 @@ import markdown
 import re
 from html import escape
 from reportlab.platypus import Image
+import logging
+from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+from reportlab.lib.units import inch
+from reportlab.lib.colors import HexColor
+from datetime import datetime
+import sys
+import subprocess
+import glob
+
+# ====== Install dependencies
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'python_dependencies.txt'])
 
 # ====== Set variables and other environmental items
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', None)
 pd.set_option('display.max_colwidth', None)
+
+# ====== Logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[
+        logging.FileHandler("apps2_exec_report.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # ====== Get API key's
 def get_api_key(api_name):
@@ -32,16 +57,16 @@ def get_api_key(api_name):
             for api in data['api_keys']:
                 if api['api_name'] == api_name:
                     return api['api_key']
-            print(f"No API key found for '{api_name}'")
+            logger.warning("No API key found for '%s'", api_name)
             return None
     except FileNotFoundError:
-        print(f"Error: API keys file not found at {file_path}")
+        logger.error("API keys file not found at %s", file_path)
         return None
     except json.JSONDecodeError:
-        print("Error: Invalid JSON format in API keys file")
+        logger.error("Invalid JSON format in API keys file")
         return None
     except Exception as e:
-        print(f"Error reading API keys: {e}")
+        logger.exception("Error reading API keys")
         return None
 
 
@@ -63,11 +88,13 @@ headers = {"Authorization": apps2_api_key,
 response = requests.get(BASE_URL, headers=headers)
 response.raise_for_status()
 
+logger.info("Fetching CSV data from OneVizion API")
 csv_text = response.content.decode("utf-8-sig")  # handles BOM
 df = pd.read_csv(io.StringIO(csv_text))
+logger.info("Loaded %d records into DataFrame", len(df))
 
 # ====== If we added a chunk here, we could write to PostgreSQL periodically and append the data to build a pipeline.
-# df.to_....
+# df.to_...
 
 # ====== Use an AI model to analyze the data (Instance name: 'apps2-azure-analysis')
 endpoint = "https://ddemand.openai.azure.com/openai/v1/"
@@ -125,11 +152,11 @@ completion = client.chat.completions.create(
     ],
 )
 
-print(completion.choices[0].message)
+logger.info("LLM analysis completed successfully")
 
 # ====== Assemble the executive reporting
+logger.info("Building executive PDF report")
 executive_summary = completion.choices[0].message.content.strip()
-
 
 def md_to_reportlab(text: str) -> str:
     """
@@ -151,19 +178,10 @@ def md_to_reportlab(text: str) -> str:
 
     return text
 
-
-from reportlab.lib.pagesizes import LETTER
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_LEFT
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
-from reportlab.lib.units import inch
-from reportlab.lib.colors import HexColor
-from datetime import datetime
-
-# ===== PDF file name
+# ====== PDF file name
 pdf_filename = "Executive_Project_Summary.pdf"
 
-# ===== Document setup
+# ====== Document setup
 doc = SimpleDocTemplate(
     pdf_filename,
     pagesize=LETTER,
@@ -173,7 +191,7 @@ doc = SimpleDocTemplate(
     bottomMargin=50
 )
 
-# ===== Styles
+# ====== Styles
 styles = getSampleStyleSheet()
 
 styles.add(ParagraphStyle(
@@ -239,10 +257,10 @@ styles.add(ParagraphStyle(
     textColor=HexColor("#34495e")
 ))
 
-# ===== Content container
+# ====== Content container for PDF
 elements = []
 
-# ===== Add logo at top of document
+# ====== Add logo at top of document
 logo_path = "assets/logo.png"
 
 if os.path.exists(logo_path):
@@ -255,16 +273,15 @@ if os.path.exists(logo_path):
     elements.append(logo)
     elements.append(Spacer(1, 0.25 * inch))
 
-# ===== Title Section
+# ====== Title Section
 elements.append(Paragraph("Executive Project Summary", styles["TitleStyle"]))
-elements.append(Paragraph(
-    "<b>Program:</b> Telecom Network Deployment<br/>"
+elements.append(Paragraph("<b>Program:</b> Telecom Network Deployment<br/>"
     f"<b>Date:</b> {datetime.now().strftime('%B %d, %Y')}",
     styles["BodyStyle"]
 ))
 elements.append(Spacer(1, 0.3 * inch))
 
-# ===== Parse Markdown-like structure
+# ====== Parse Markdown-like structure
 markdown_lines = executive_summary.splitlines()
 bullet_buffer = []
 
@@ -274,7 +291,7 @@ for line in markdown_lines:
     if not raw_line:
         continue
 
-    # ===== Markdown Headings (#, ##, ###)
+    # Markdown Headings (#, ##, ###)
     if raw_line.startswith("#"):
         if bullet_buffer:
             elements.append(ListFlowable(
@@ -295,12 +312,12 @@ for line in markdown_lines:
 
         continue
 
-    # ===== Bullet points
+    # Bullet points
     if raw_line.startswith("-"):
         bullet_buffer.append(md_to_reportlab(raw_line.lstrip("- ").strip()))
         continue
 
-    # ===== Normal paragraph
+    # Normal paragraph
     if bullet_buffer:
         elements.append(ListFlowable(
             [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
@@ -310,20 +327,13 @@ for line in markdown_lines:
 
     elements.append(Paragraph(md_to_reportlab(raw_line), styles["BodyStyle"]))
 
-# Flush remaining bullets
+# ====== Flush remaining bullets
 if bullet_buffer:
     elements.append(ListFlowable(
         [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
         bulletType="bullet"
     ))
 
-# Flush remaining bullets
-if bullet_buffer:
-    elements.append(ListFlowable(
-        [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
-        bulletType="bullet"
-    ))
-
-# ===== Build PDF
+# ====== Build PDF
 doc.build(elements)
-print(f"✅ Professional PDF generated: {pdf_filename}")
+logger.info("Professional PDF generated: %s", pdf_filename)
