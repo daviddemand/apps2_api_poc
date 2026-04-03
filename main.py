@@ -118,7 +118,7 @@ Data (JSON):
 {df.to_dict(orient="records")}
 
 Focus on:
-- Group by: 'Program ID', 'Project Type' and 'Project Priority'
+- Group by: 'Program ID'
 - Overall Project Health: 'Schedule Status', budget variances, resource bottlenecks
 - Risks: timeline slips ('On-Air to Baseline Variance'), cost overruns, permitting/location issues
 - Responsibilities: 'Program Manager', 'Project Manager', 'Construction Manager', 'Commissioning Manager', 
@@ -333,42 +333,31 @@ for line in markdown_lines:
 
 # ====== Flush remaining bullets
 if bullet_buffer:
-    elements.append(ListFlowable(
-        [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
-        bulletType="bullet"
-    ))
-
-# ====== Function to upload a file to a field
-class ModuleError(Exception):
-
-    def __init__(self, error_message: str, description) -> None:
-        self._message = error_message
-        self._description = description
-
-    @property
-    def message(self) -> str:
-        return self._message
-
-    @property
-    def description(self) -> str:
-        return self._description
-
-def upload_file(self, trackor_type: str, trackor_id: int, field_name: str, file_name: str) -> list:
-    ov_trackor_type = Trackor(trackorType=trackor_type, URL=self._ov_url,
-        userName=self._ov_access_key, password=self._ov_secret_key, isTokenAuth=True)
-
-    ov_trackor_type.UploadFile(
-        trackorId=trackor_id,
-        fieldName=field_name,
-        fileName=file_name
+    elements.append(
+        ListFlowable(
+            [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
+            bulletType="bullet"
+        )
     )
-
-    if len(ov_trackor_type.errors) != 0:
-        raise ModuleError(f'Failed to upload the file [{file_name}] for Trackor ID [{trackor_id}]',
-                          ov_trackor_type.errors)
-
-    return ov_trackor_type.jsonData
 
 # ====== Build PDF
 doc.build(elements)
+
+# ====== Post the File to the tracker
+url = ("https://apps2.onevizion.com/api/v3/trackor/1001648860/file/PGM_EXECUTIVE_SUMMARY")
+params = {"file_name": "executive_summary.pdf"}
+headers = {"Accept": "*/*", "Authorization": (apps2_api_key),}
+files = {
+    "file": (
+        "Executive_Project_Summary.pdf",
+        open("Executive_Project_Summary.pdf", "rb"),
+        "application/pdf",
+    )
+}
+
+response = requests.post(url, headers=headers, params=params, files=files)
+
+# ====== Log the completions
+logger.info(response.status_code)
+logger.info(response.text)
 logger.info("PDF generated: %s", pdf_filename)
