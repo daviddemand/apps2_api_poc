@@ -27,6 +27,7 @@ from datetime import datetime
 import sys
 import subprocess
 import glob
+from onevizion import Trackor
 
 # ====== Install dependencies
 subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'python_dependencies.txt'])
@@ -48,9 +49,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ====== Get API key's
+# ====== Get API key's and Base URL
 def get_api_key(api_name):
-    file_path = "/Users/daviddemand/PyCharmMiscProject/api_keys/api_creds.json"
+    file_path = "settings.json"
     try:
         with open(file_path, 'r') as file:
             data = json.load(file)
@@ -69,23 +70,28 @@ def get_api_key(api_name):
         logger.exception("Error reading API keys")
         return None
 
-
 # ====== Get API key's
 apps2_api_key = get_api_key("apps2_api_key")
 if not apps2_api_key:
-    raise Exception("API key not found. Exiting.")
+    raise Exception("APPS2 API key not found. Exiting.")
 
 azure_foundry_api_key = get_api_key("azure_foundry")
 if not azure_foundry_api_key:
-    raise Exception("API key not found. Exiting.")
+    raise Exception("Azure Foundry API key not found. Exiting.")
+
+base_url = get_api_key("BASE_URL")
+if not base_url:
+    raise Exception("BASE URL key not found. Exiting.")
+
+azure_url = get_api_key("AZURE_URL")
+if not azure_url:
+    raise Exception("Azure AI URL not found. Exiting.")
 
 # ====== Get the data
-BASE_URL = 'https://apps2.onevizion.com/api/v3/trackor/1002067287/file/RR_RR_FILE'
-
 headers = {"Authorization": apps2_api_key,
            "Accept": "text/csv"}
 
-response = requests.get(BASE_URL, headers=headers)
+response = requests.get(base_url, headers=headers)
 response.raise_for_status()
 
 logger.info("Fetching CSV data from OneVizion API")
@@ -93,15 +99,13 @@ csv_text = response.content.decode("utf-8-sig")  # handles BOM
 df = pd.read_csv(io.StringIO(csv_text))
 logger.info("Loaded %d records into DataFrame", len(df))
 
-# ====== If we added a chunk here, we could write to PostgreSQL periodically and append the data to build a pipeline.
+# ====== If we added a chunk here, we could write the data to PostgreSQL and append the data to build a pipeline.
 # df.to_...
 
 # ====== Use an AI model to analyze the data (Instance name: 'apps2-azure-analysis')
-endpoint = "https://ddemand.openai.azure.com/openai/v1/"
 deployment_name = "gpt-4.1"
-
 client = OpenAI(
-    base_url=endpoint,
+    base_url=azure_url,
     api_key=azure_foundry_api_key
 )
 
@@ -334,6 +338,37 @@ if bullet_buffer:
         bulletType="bullet"
     ))
 
+# ====== Function to upload a file to a field
+class ModuleError(Exception):
+
+    def __init__(self, error_message: str, description) -> None:
+        self._message = error_message
+        self._description = description
+
+    @property
+    def message(self) -> str:
+        return self._message
+
+    @property
+    def description(self) -> str:
+        return self._description
+
+def upload_file(self, trackor_type: str, trackor_id: int, field_name: str, file_name: str) -> list:
+    ov_trackor_type = Trackor(trackorType=trackor_type, URL=self._ov_url,
+        userName=self._ov_access_key, password=self._ov_secret_key, isTokenAuth=True)
+
+    ov_trackor_type.UploadFile(
+        trackorId=trackor_id,
+        fieldName=field_name,
+        fileName=file_name
+    )
+
+    if len(ov_trackor_type.errors) != 0:
+        raise ModuleError(f'Failed to upload the file [{file_name}] for Trackor ID [{trackor_id}]',
+                          ov_trackor_type.errors)
+
+    return ov_trackor_type.jsonData
+
 # ====== Build PDF
 doc.build(elements)
-logger.info("Professional PDF generated: %s", pdf_filename)
+logger.info("PDF generated: %s", pdf_filename)
