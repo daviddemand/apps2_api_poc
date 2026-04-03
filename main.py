@@ -30,7 +30,7 @@ import glob
 from onevizion import Trackor
 
 # ====== Install dependencies
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'python_dependencies.txt'])
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'python_dependencies.ini'])
 
 # ====== Set variables and other environmental items
 pd.set_option('display.max_rows', None)
