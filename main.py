@@ -13,7 +13,8 @@ import json
 import io
 import os
 
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'python_dependencies.ini'])
+# ====== For use in the app server environment
+# subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'python_dependencies.ini'])
 
 
 # ====== Import the required modules
