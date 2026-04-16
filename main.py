@@ -1,6 +1,6 @@
 """
 An exploratory run of the OneVizion API on APPS2.
-Author: David Demand
+Author: Greg Tiffany, David Demand
 Email: ddemand@onevizion.com
 Date: 3/27/2026
 """
@@ -12,10 +12,7 @@ import glob
 import json
 import io
 import os
-
-# ====== For use in the app server environment
-# subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'python_dependencies.ini'])
-
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'python_dependencies.ini'])
 
 # ====== Import the required modules
 import pandas as pd
@@ -32,14 +29,18 @@ from reportlab.lib.enums import TA_LEFT
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
 from reportlab.lib.units import inch
 from reportlab.lib.colors import HexColor
-from datetime import datetime
+from datetime import datetime,  timezone
 from onevizion import Trackor
+import urllib.parse
 
 # ====== Set variables and other environmental items
-pd.set_option('display.max_rows', None)
-pd.set_option('display.max_columns', None)
-pd.set_option('display.width', None)
-pd.set_option('display.max_colwidth', None)
+pd.set_option("display.max_rows", None)
+pd.set_option("display.max_columns", None)
+pd.set_option("display.width", None)
+pd.set_option("display.max_colwidth", None)
+
+# Static assets
+logo_path = "assets/logo.png"
 
 # ====== Logging configuration
 logging.basicConfig(
@@ -52,153 +53,96 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ====== Get API key's and Base URL
-def get_api_key(api_name):
+# ====== Get keys
+def get_key(key: str) -> str | None:
     file_path = "settings.json"
     try:
-        with open(file_path, 'r') as file:
-            data = json.load(file)
-            for api in data['api_keys']:
-                if api['api_name'] == api_name:
-                    return api['api_key']
-            logger.warning("No API key found for '%s'", api_name)
-            return None
-    except FileNotFoundError:
-        logger.error("API keys file not found at %s", file_path)
-        return None
-    except json.JSONDecodeError:
-        logger.error("Invalid JSON format in API keys file")
-        return None
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        for api in data.get("keys", []):git
+            if api.get("key") == key:
+                return api.get("value")
     except Exception as e:
-        logger.exception("Error reading API keys")
-        return None
+        logger.exception("Failed loading API key: %s", key)
+    return None
 
-# ====== Get API key's
-apps2_api_key = get_api_key("apps2_api_key")
-if not apps2_api_key:
-    raise Exception("APPS2 API key not found. Exiting.")
+# ====== Get API key's, endpoints and URL's
+apps2_api_key = get_key("apps2_api_key")
+azure_foundry_api_key = get_key("azure_foundry")
+azure_url = get_key("AZURE_URL")
+data_url = get_key("DATA_URL")
 
-azure_foundry_api_key = get_api_key("azure_foundry")
-if not azure_foundry_api_key:
-    raise Exception("Azure Foundry API key not found. Exiting.")
 
-base_url = get_api_key("BASE_URL")
-if not base_url:
-    raise Exception("BASE URL key not found. Exiting.")
+url_subdomain = get_key("URL_SUBDOMAIN")
+destination_field = get_key("DESTINATION_FIELD")
+trackor_type = get_key("TRACKOR_TYPE")
+csv_dimension_column = get_key("CSV_DIMENSION_COLUMN")
+base_url = f'https://{url_subdomain}.onevizion.com/api/v3/trackor/'
 
-azure_url = get_api_key("AZURE_URL")
-if not azure_url:
-    raise Exception("Azure AI URL not found. Exiting.")
+if not all([apps2_api_key, azure_foundry_api_key, azure_url, url_subdomain, base_url]):
+    raise RuntimeError("One or more required API keys are missing")
 
-# ====== Get the data
-headers = {"Authorization": apps2_api_key,
-           "Accept": "text/csv"}
-
-response = requests.get(base_url, headers=headers)
+# ====== Get the data from the OneVizion API
+logger.info("Fetching project data from OneVizion API")
+response = requests.get(data_url, headers= {"Authorization": apps2_api_key, "Accept": "text/csv"})
 response.raise_for_status()
 
-logger.info("Fetching CSV data from OneVizion API")
-csv_text = response.content.decode("utf-8-sig")  # handles BOM
+csv_text = response.content.decode("utf-8-sig")
 df = pd.read_csv(io.StringIO(csv_text))
-logger.info("Loaded %d records into DataFrame", len(df))
 
-# ====== If we added a chunk here, we could write the data to PostgreSQL and append the data to build a pipeline.
-# df.to_...
+logger.info("Loaded %d records", len(df))
+
+# ====== Identify the unique records and their trackors
+program_ids = df[csv_dimension_column].dropna().unique().tolist()
+logger.info(f"Discovered %d unique {csv_dimension_column}", len(program_ids))
+
+# ====== Create URL-friendly versions and build the dictionary
+program_ids_url = [urllib.parse.quote(str(pid)) for pid in program_ids]   # ensure string
+program_id_to_url: dict[str, str] = dict(zip(program_ids, program_ids_url))
+logger.info("Created program_id_to_url dictionary with %d entries", len(program_id_to_url))
+
+# ====== Use the API to get Trackor information
+response = requests.get('https://apps2.onevizion.com/api/v3/trackor_types', headers= {
+    "Authorization": apps2_api_key,
+    "Accept": "application/json"}
+                        )
+response.raise_for_status()
+trackor_list = json.loads(response.content.decode("utf-8-sig"))
+
+# Extract the id and name for the selected trackor
+try:
+    program_trackor = next(
+        item for item in trackor_list
+        if isinstance(item, dict) and item.get("name") == trackor_type
+    )
+    trackor_type_id = program_trackor["id"]
+    trackor_type_name    = program_trackor["name"]
+    trackor_type_label   = program_trackor.get("label", "")
+    trackor_type_prefix  = program_trackor.get("prefix", "")
+    logger.info(f"{trackor_type} loaded → ID: {trackor_type_id}, Name: {trackor_type_name}, "
+                f"Label: {trackor_type_label}, Prefix: {trackor_type_prefix}")
+except StopIteration:
+    raise ValueError(f"{trackor_type} not found in the API response") from None
 
 # ====== Use an AI model to analyze the data (Instance name: 'apps2-azure-analysis')
-deployment_name = "gpt-4.1"
 client = OpenAI(
     base_url=azure_url,
     api_key=azure_foundry_api_key
 )
+deployment_name = "gpt-4.1"
 
-analysis_prompt = f"""
-You are an expert Program Director overseeing projects in the telecom industry for large network deployments, and the 
-construction of wireless and fiber optic networks.
-
-Analyze this project data carefully. 
-Data (JSON):
-{df.to_dict(orient="records")}
-
-Focus on:
-- Group by: 'Program ID'
-- Overall Project Health: 'Schedule Status', budget variances, resource bottlenecks
-- Risks: timeline slips ('On-Air to Baseline Variance'), cost overruns, permitting/location issues
-- Responsibilities: 'Program Manager', 'Project Manager', 'Construction Manager', 'Commissioning Manager', 
-'General Contractor', 'Next Milestone Responsible Person'
-- Insights: strategic recommendations for scaling nationwide backhaul
-
-Output format — use markdown-style headings:
-
-Summary Details
-
-Overall Program Health Status
-
-- Bullet points...
-
-Key Projects Overview and Milestones
-
-...
-
-Risks & Mitigations
-
-...
-
-Strategic Recommendations
-
-Be concise, professional, data-driven, and actionable. Identify any responsible parties to assign actionable items to.
-Use bold text to bring attention to critical items. 
-"""
-
-completion = client.chat.completions.create(
-    model=deployment_name,
-    messages=[
-        {"role": "user",
-         "content": analysis_prompt,
-        }
-    ],
-)
-
-logger.info("LLM analysis completed successfully")
-
-# ====== Assemble the executive reporting
-logger.info("Building executive PDF report")
-executive_summary = completion.choices[0].message.content.strip()
-
+# ====== Helper: Markdown → ReportLab-safe text
 def md_to_reportlab(text: str) -> str:
     """
-    Converts **bold** markdown to ReportLab-safe <b> tags
-    and escapes everything else.
+    Converts markdown **bold** into <b> tags and escapes everything else.
     """
     if not text:
         return ""
 
-    # Escape everything first
     text = escape(text)
-
-    # Replace markdown bold **text**
-    text = re.sub(
-        r"\*\*(.+?)\*\*",
-        r"<b>\1</b>",
-        text
-    )
-
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     return text
 
-# ====== PDF file name
-pdf_filename = "Executive_Project_Summary.pdf"
-
-# ====== Document setup
-doc = SimpleDocTemplate(
-    pdf_filename,
-    pagesize=LETTER,
-    rightMargin=50,
-    leftMargin=50,
-    topMargin=50,
-    bottomMargin=50
-)
-
-# ====== Styles
 styles = getSampleStyleSheet()
 
 styles.add(ParagraphStyle(
@@ -208,16 +152,6 @@ styles.add(ParagraphStyle(
     spaceAfter=16,
     textColor=HexColor("#2c3e50"),
     alignment=TA_LEFT
-))
-
-styles.add(ParagraphStyle(
-    name="HeaderStyle",
-    fontSize=13,
-    leading=16,
-    spaceBefore=16,
-    spaceAfter=8,
-    textColor=HexColor("#2c3e50"),
-    fontName="Helvetica-Bold"
 ))
 
 styles.add(ParagraphStyle(
@@ -264,42 +198,150 @@ styles.add(ParagraphStyle(
     textColor=HexColor("#34495e")
 ))
 
-# ====== Content container for PDF
-elements = []
+# ====== Program-level analysis & PDF generation
+for program_id in program_ids:
+    logger.info(f"Processing {csv_dimension_column}: %s", program_id)
 
-# ====== Add logo at top of document
-logo_path = "assets/logo.png"
-
-if os.path.exists(logo_path):
-    logo = Image(
-        logo_path,
-        width=2.44 * inch,   # adjust if needed
-        height=0.49 * inch,
-        hAlign="LEFT"
-    )
-    elements.append(logo)
-    elements.append(Spacer(1, 0.25 * inch))
-
-# ====== Title Section
-elements.append(Paragraph("Executive Project Summary", styles["TitleStyle"]))
-elements.append(Paragraph("<b>Program:</b> Telecom Network Deployment<br/>"
-    f"<b>Date:</b> {datetime.now().strftime('%B %d, %Y')}",
-    styles["BodyStyle"]
-))
-elements.append(Spacer(1, 0.3 * inch))
-
-# ====== Parse Markdown-like structure
-markdown_lines = executive_summary.splitlines()
-bullet_buffer = []
-
-for line in markdown_lines:
-    raw_line = line.strip()
-
-    if not raw_line:
+    program_df = df[df[csv_dimension_column] == program_id].copy()
+    if program_df.empty:
+        logger.warning(f"No data for {csv_dimension_column} %s", program_id)
         continue
 
-    # Markdown Headings (#, ##, ###)
-    if raw_line.startswith("#"):
+    # Get URL-encoded key and resolve TRACKOR_ID
+    if program_id not in program_id_to_url:
+        logger.error(f"No URL mapping found for {csv_dimension_column}: %s", program_id)
+        continue
+
+    encoded_key = program_id_to_url[program_id]
+
+    try:
+        trackor_response = requests.get(
+            f'https://apps2.onevizion.com/api/v3/trackor_types/{trackor_type}/trackors?XITOR_KEY={encoded_key}',
+            headers={
+                "Authorization": apps2_api_key,
+                "Accept": "application/json"
+            }
+        )
+        trackor_response.raise_for_status()
+        trackor_data = trackor_response.json()
+
+        if not trackor_data or len(trackor_data) == 0:
+            logger.error(f"No Trackor found for {csv_dimension_column}: %s (encoded: %s)", program_id, encoded_key)
+            continue
+
+        # Take the first match (should usually be only one)
+        trackor_id = trackor_data[0]["TRACKOR_ID"]
+        logger.info(f"Resolved TRACKOR_ID %s for {csv_dimension_column} %s", trackor_id, program_id)
+
+    except requests.exceptions.RequestException as e:
+        logger.error("Failed to resolve Trackor ID for Program %s: %s", program_id, e)
+        continue
+    except (KeyError, IndexError, TypeError) as e:
+        logger.error("Unexpected response format when resolving Trackor for %s: %s", program_id, e)
+        continue
+
+    # AI/LLM Analysis
+    analysis_prompt = f"""
+        You are an expert Program Director overseeing telecom network deployments.
+        
+        Analyze ONLY {csv_dimension_column}: {program_id}
+        
+        Data (JSON):
+        {program_df.to_dict(orient="records")}
+        
+        Use the following markdown structure exactly:
+        
+        # Summary Details
+        # Overall Program Health Status
+        - Bullet points
+        
+        # Key Projects Overview and Milestones
+        # Risks & Mitigations
+        # Strategic Recommendations
+        
+        Be concise, executive-focused, data-driven, and actionable.
+        Highlight owners, risks, and critical dates using **bold** text.
+        """
+
+    try:
+        completion = client.chat.completions.create(
+            model=deployment_name,
+            messages=[{"role": "user", "content": analysis_prompt}],
+            temperature=0.3,   # optional: lower for more consistent executive tone
+        )
+
+        executive_summary = completion.choices[0].message.content.strip()
+
+    except Exception as e:
+        logger.error("LLM call failed for Program %s: %s", program_id, e)
+        continue
+
+    # PDF Generation
+    pdf_filename = f"Executive_Project_Summary_{program_id.replace(' ', '_')}.pdf"
+
+    doc = SimpleDocTemplate(
+        pdf_filename,
+        pagesize=LETTER,
+        rightMargin=50,
+        leftMargin=50,
+        topMargin=50,
+        bottomMargin=50
+    )
+
+    elements = []
+
+    # Logo
+    if os.path.exists(logo_path):
+        elements.append(Image(logo_path, width=2.44 * inch, height=0.49 * inch, hAlign="LEFT"))
+        elements.append(Spacer(1, 0.25 * inch))
+
+    # Title
+    elements.append(Paragraph(
+        f"Executive Summary — Program {program_id}",
+        styles["TitleStyle"]
+    ))
+
+    # Updated Date with UTC Timestamp
+    now_utc = datetime.now(timezone.utc)
+    date_str = now_utc.strftime('%B %d, %Y')
+    time_str = now_utc.strftime('%H:%M:%S UTC')
+
+    elements.append(Paragraph(
+        f"<b>{csv_dimension_column}:</b> {program_id}<br/>"
+        f"<b>Date:</b> {date_str} at {time_str}",
+        styles["BodyStyle"]
+    ))
+
+    elements.append(Spacer(1, 0.3 * inch))
+
+    # Parse markdown into ReportLab elements
+    bullet_buffer = []
+
+    for line in executive_summary.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+
+        if raw.startswith("#"):
+            # Flush any pending bullets
+            if bullet_buffer:
+                elements.append(ListFlowable(
+                    [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
+                    bulletType="bullet"
+                ))
+                bullet_buffer = []
+
+            level = len(raw) - len(raw.lstrip("#"))
+            text = raw.lstrip("#").strip()
+            style_name = "H1" if level == 1 else "H2" if level == 2 else "H3"
+            elements.append(Paragraph(md_to_reportlab(text), styles[style_name]))
+            continue
+
+        if raw.startswith("- "):
+            bullet_buffer.append(md_to_reportlab(raw.lstrip("- ").strip()))
+            continue
+
+        # Flush bullets if we hit normal text
         if bullet_buffer:
             elements.append(ListFlowable(
                 [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
@@ -307,60 +349,47 @@ for line in markdown_lines:
             ))
             bullet_buffer = []
 
-        level = len(raw_line) - len(raw_line.lstrip("#"))
-        text = raw_line.lstrip("#").strip()
+        elements.append(Paragraph(md_to_reportlab(raw), styles["BodyStyle"]))
 
-        if level == 1:
-            elements.append(Paragraph(md_to_reportlab(text), styles["H1"]))
-        elif level == 2:
-            elements.append(Paragraph(md_to_reportlab(text), styles["H2"]))
-        else:
-            elements.append(Paragraph(md_to_reportlab(text), styles["H3"]))
-
-        continue
-
-    # Bullet points
-    if raw_line.startswith("-"):
-        bullet_buffer.append(md_to_reportlab(raw_line.lstrip("- ").strip()))
-        continue
-
-    # Normal paragraph
+    # Don't forget any trailing bullets
     if bullet_buffer:
         elements.append(ListFlowable(
             [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
             bulletType="bullet"
         ))
-        bullet_buffer = []
 
-    elements.append(Paragraph(md_to_reportlab(raw_line), styles["BodyStyle"]))
+    # Build the PDF
+    try:
+        doc.build(elements)
+        logger.info("Successfully generated PDF: %s", pdf_filename)
+    except Exception as e:
+        logger.error("Failed to build PDF for Program %s: %s", program_id, e)
+        continue
 
-# ====== Flush remaining bullets
-if bullet_buffer:
-    elements.append(
-        ListFlowable(
-            [ListItem(Paragraph(b, styles["BulletStyle"])) for b in bullet_buffer],
-            bulletType="bullet"
+    # Upload PDF to the current Trackor
+    try:
+        with open(pdf_filename, "rb") as f:
+            files = {"file": (pdf_filename, f, "application/pdf")}
+
+            upload_url = f'https://apps2.onevizion.com/api/v3/trackor/{trackor_id}/file/{destination_field}'
+
+            upload_response = requests.post(
+                upload_url,
+                headers={
+                    "Accept": "*/*",
+                    "Authorization": apps2_api_key
+                },
+                params={"file_name": pdf_filename},
+                files=files
+            )
+
+        logger.info(
+            "Upload result for Program %s (Trackor ID %s): %s - %s",
+            program_id, trackor_id, upload_response.status_code, upload_response.text[:500]
         )
-    )
 
-# ====== Build PDF
-doc.build(elements)
+        if upload_response.status_code not in (200, 201, 204):
+            logger.warning("Upload may have failed for %s", program_id)
 
-# ====== Post the File to the tracker
-url = ("https://apps2.onevizion.com/api/v3/trackor/1001648860/file/PGM_EXECUTIVE_SUMMARY")
-params = {"file_name": "executive_summary.pdf"}
-headers = {"Accept": "*/*", "Authorization": (apps2_api_key),}
-files = {
-    "file": (
-        "Executive_Project_Summary.pdf",
-        open("Executive_Project_Summary.pdf", "rb"),
-        "application/pdf",
-    )
-}
-
-response = requests.post(url, headers=headers, params=params, files=files)
-
-# ====== Log the completions
-logger.info(response.status_code)
-logger.info(response.text)
-logger.info("PDF generated: %s", pdf_filename)
+    except Exception as e:
+        logger.error("Failed to upload PDF for Program %s: %s", program_id, e)

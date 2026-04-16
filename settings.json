@@ -1,21 +1,30 @@
 {
-	"api_keys":
+	"keys":
 	[
 		{
-		"api_name": "apps2_api_key",
-		"api_key": ""
+		"key": "apps2_api_key",
+		"value": ""
 		},
-		{
-		"api_name": "azure_foundry",
-		"api_key": ""
+		{"key": "DATA_URL",
+		"value": ""
 		},
-		{
-		"api_name": "BASE_URL",
-		"api_key": ""
+		{"key": "azure_foundry",
+		"value": ""
 		},
-		{
-		"api_name": "AZURE_URL",
-		"api_key":  ""
+		{"key": "AZURE_URL",
+		"value":  ""
+		},
+		{"key": "URL_SUBDOMAIN",
+		"value":  "apps2"
+		},
+		{"key":  "TRACKOR_TYPE",
+		"value":  "ProgramTrackor"
+		},
+		{"key":  "DESTINATION_FIELD",
+		"value":  "PGM_EXECUTIVE_SUMMARY"
+		},
+		{"key":  "CSV_DIMENSION_COLUMN",
+		"value":  "Program ID"
 		}
 	]
 }
